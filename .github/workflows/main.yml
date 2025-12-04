@@ -17,21 +17,19 @@ jobs:
     - name: Maximize build space
       uses: easimon/maximize-build-space@v4
       with:
-          root-reserve-mb: 2048
-          swap-size-mb: 4096
-          remove-dotnet: 'true'
-          remove-haskell: 'true'
-          remove-android: 'true'
+        root-reserve-mb: 2048
+        swap-size-mb: 4096
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        remove-android: 'true'
 
     - name: Checkout
       uses: actions/checkout@v4
 
     - name: Echo Free space
-      run: |
-          echo "Free space:"
-          df -h
+      run: df -h
 
-    - name: Set up Python 3.x
+    - name: Set up Python
       uses: actions/setup-python@v3
       with:
         python-version: '3.x'
@@ -43,64 +41,56 @@ jobs:
         sudo apt-get install -y g++-multilib gcc-multilib
         sudo apt-get install -y zip
 
-    - name: Get Resource (depot_tools + flutter engine)
+    - name: Get Resource
       run: |
-        # Use GitHub mirror of depot_tools (more reliable on GH Actions)
+        # Use GitHub mirror (Googlesource blocks GitHub runners randomly)
         git clone https://github.com/chromium/depot_tools.git
         export PATH="$PATH:$PWD/depot_tools"
 
-        mkdir -p flutter-engine
-
-        # Write .gclient file safely without EOF blocks
-        echo "solutions = ["                             > flutter-engine/.gclient
-        echo "  {"                                      >> flutter-engine/.gclient
-        echo "    \"managed\": False,"                  >> flutter-engine/.gclient
-        echo "    \"name\": \"src/flutter\","           >> flutter-engine/.gclient
-        echo "    \"url\": \"https://github.com/flutter/engine\"," >> flutter-engine/.gclient
-        echo "    \"custom_deps\": {},"                 >> flutter-engine/.gclient
-        echo "    \"deps_file\": \"DEPS\","             >> flutter-engine/.gclient
-        echo "    \"safesync_url\": \"\","              >> flutter-engine/.gclient
-        echo "  },"                                     >> flutter-engine/.gclient
-        echo "]"                                        >> flutter-engine/.gclient
+        mkdir flutter-engine
+        echo 'solutions = ['             > flutter-engine/.gclient
+        echo '{'                        >> flutter-engine/.gclient
+        echo ' "managed": False,'       >> flutter-engine/.gclient
+        echo ' "name": "src/flutter",'  >> flutter-engine/.gclient
+        echo ' "url": "https://github.com/flutter/engine",' >> flutter-engine/.gclient
+        echo ' "custom_deps": {},'      >> flutter-engine/.gclient
+        echo ' "deps_file": "DEPS",'    >> flutter-engine/.gclient
+        echo ' "safesync_url": "",'     >> flutter-engine/.gclient
+        echo '},'                        >> flutter-engine/.gclient
+        echo ']'                         >> flutter-engine/.gclient
 
         cd flutter-engine
-
-        # first sync
         gclient sync --jobs 4
 
-        # checkout engine version
         cd src/flutter
         git fetch --all --tags
         git checkout 3.27.4
         cd ../../
 
-        # sync deps for specific engine revision
+        # Re-sync deps for the specific engine version
         gclient sync --jobs 4
 
     - name: Build Engine
       run: |
         export PATH="$PATH:$PWD/depot_tools"
         cd flutter-engine/src
-        ls -la flutter || true
-        ls -la flutter/tools || true
         ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-goma --runtime-mode release
         ninja -C out/linux_release_arm64
 
     - name: Zip Engine
       run: |
         cd flutter-engine/src/out
-        ls -la
-        zip -q -r linux_release_arm64.zip linux_release_arm64 || true
+        zip -q -r linux_release_arm64.zip linux_release_arm64
 
     - name: Get current date
       id: date
       run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
 
     - name: Test with environment variables
-      run: echo $TAG_NAME - $RELEASE_TIME
+      run: echo "$TAG_NAME - $RELEASE_TIME"
       env:
-          TAG_NAME: Flutter-ARM64
-          RELEASE_TIME: 3.27.4
+        TAG_NAME: Flutter-ARM64
+        RELEASE_TIME: 3.27.4
 
     - name: Release Engine
       uses: ncipollo/release-action@v1
