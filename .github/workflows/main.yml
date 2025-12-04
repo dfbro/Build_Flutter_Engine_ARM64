@@ -16,70 +16,85 @@ jobs:
     outputs:
       src-path: flutter-engine
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Maximize build space
-      uses: easimon/maximize-build-space@v4
-      with:
-        root-reserve-mb: 2048
-        swap-size-mb: 4096
-        remove-dotnet: true
-        remove-haskell: true
-        remove-android: true
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@v4
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 4096
+          remove-dotnet: true
+          remove-haskell: true
+          remove-android: true
 
-    - name: Install build deps
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
-        sudo apt-get install -y g++-multilib gcc-multilib
-        sudo apt-get install -y zip git python3 ninja-build cmake
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            g++-aarch64-linux-gnu \
+            g++-arm-linux-gnueabihf \
+            g++-multilib gcc-multilib \
+            zip git python3 python3-pip ninja-build cmake
 
-    - name: Cache depot_tools
-      uses: actions/cache@v4
-      with:
-        path: depot_tools
-        key: depot_tools-cache
+      - name: Cache depot_tools
+        uses: actions/cache@v4
+        with:
+          path: depot_tools
+          key: depot_tools-cache
 
-    - name: Get depot_tools if missing
-      run: |
-        if [ ! -d depot_tools ]; then
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-        fi
-        echo "$PWD/depot_tools" >> $GITHUB_PATH
+      - name: Ensure depot_tools on PATH
+        run: |
+          if [ ! -d depot_tools ]; then
+            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          fi
+          echo "$PWD/depot_tools" >> $GITHUB_PATH
+          export PATH="$PATH:$PWD/depot_tools"
 
-    - name: Cache flutter-engine source
-      uses: actions/cache@v4
-      with:
-        path: flutter-engine
-        key: flutter-engine-${{ github.sha }}
+      - name: Create .gclient and full sync (fetch all deps & hooks)
+        run: |
+          if [ ! -d flutter-engine ]; then
+            mkdir flutter-engine
+            echo "solutions = [" > flutter-engine/.gclient
+            echo '  {' >> flutter-engine/.gclient
+            echo '    "managed": False,' >> flutter-engine/.gclient
+            echo '    "name": "src/flutter",' >> flutter-engine/.gclient
+            echo '    "url": "https://github.com/flutter/engine",' >> flutter-engine/.gclient
+            echo '    "custom_deps": {},' >> flutter-engine/.gclient
+            echo '    "deps_file": "DEPS",' >> flutter-engine/.gclient
+            echo '    "safesync_url": "",' >> flutter-engine/.gclient
+            echo '  }' >> flutter-engine/.gclient
+            echo "]" >> flutter-engine/.gclient
 
-    - name: Sync Flutter Engine (shallow, fast)
-      run: |
-        if [ ! -d flutter-engine ]; then
-          mkdir flutter-engine
-          echo "solutions = [" > flutter-engine/.gclient
-          echo '  {' >> flutter-engine/.gclient
-          echo '    "managed": False,' >> flutter-engine/.gclient
-          echo '    "name": "src/flutter",' >> flutter-engine/.gclient
-          echo '    "url": "https://github.com/flutter/engine",' >> flutter-engine/.gclient
-          echo '    "custom_deps": {},' >> flutter-engine/.gclient
-          echo '    "deps_file": "DEPS",' >> flutter-engine/.gclient
-          echo '    "safesync_url": "",' >> flutter-engine/.gclient
-          echo '  }' >> flutter-engine/.gclient
-          echo "]" >> flutter-engine/.gclient
+            cd flutter-engine
+            export DEPOT_TOOLS_UPDATE=0
 
-          cd flutter-engine
-          export DEPOT_TOOLS_UPDATE=0
+            # FULL sync (no --shallow, so third_party packages are fetched)
+            gclient sync --jobs 16
 
-          gclient sync --jobs 16 --shallow --no-history --nohooks --noprehooks 
+            cd src/flutter
+            git fetch --tags
+            git checkout 3.27.4 || true
 
-          cd src/flutter
-          git fetch --tags
-          git checkout 3.27.4
+            cd ../..
+            # Ensure runhooks executed
+            cd flutter-engine
+            gclient runhooks
+            cd ..
+          fi
 
-          cd ../../
-          gclient runhooks
-        fi
+      - name: Fetch Dart/pub deps (online)
+        run: |
+          # Ensure dart sdk path is present in tree; this script will run pub get (not offline)
+          cd flutter-engine/src/flutter
+          python3 src/flutter/third_party/dart/tools/sdks/dart-sdk/bin/dart pub get --suppress-analytics || true
+          cd ../..
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: src
+          path: flutter-engine
 
   build:
     needs: prepare
@@ -91,57 +106,73 @@ jobs:
         mode: [release, debug]
 
     steps:
-    - name: Restore flutter-engine
-      uses: actions/cache@v4
-      with:
-        path: flutter-engine
-        key: flutter-engine-${{ github.sha }}
+      - name: Restore depot_tools cache (if any)
+        uses: actions/cache@v4
+        with:
+          path: depot_tools
+          key: depot_tools-cache
 
-    - name: Restore build output cache
-      id: cache-build
-      uses: actions/cache@v4
-      with:
-        path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
-        key: engine-build-${{ matrix.os }}-${{ matrix.mode }}-arm64-${{ github.sha }}
+      - name: Ensure depot_tools on PATH
+        run: |
+          if [ ! -d depot_tools ]; then
+            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          fi
+          echo "$PWD/depot_tools" >> $GITHUB_PATH
+          export PATH="$PATH:$PWD/depot_tools"
 
-    - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
-      if: steps.cache-build.outputs.cache-hit != 'true'
-      run: |
-        cd flutter-engine/src
-        ./flutter/tools/gn \
-          --target-os ${{ matrix.os }} \
-          --linux-cpu arm64 \
-          --no-goma \
-          --runtime-mode ${{ matrix.mode }}
+      - name: Download synced source
+        uses: actions/download-artifact@v4
+        with:
+          name: src
+          path: .
 
-        ninja -C out/${{ matrix.os }}_${{ matrix.mode }}_arm64 -j$(nproc)
+      - name: Restore build output cache
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
+          key: engine-build-${{ matrix.os }}-${{ matrix.mode }}-arm64-${{ github.ref }}
 
-    - name: Upload build artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.os }}_${{ matrix.mode }}_arm64
-        path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
+      - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          cd flutter-engine/src
+          echo "Running GN for ${{ matrix.os }} ${{ matrix.mode }}"
+          ./flutter/tools/gn \
+            --target-os ${{ matrix.os }} \
+            --linux-cpu arm64 \
+            --no-goma \
+            --runtime-mode ${{ matrix.mode }}
+
+          ninja -C out/${{ matrix.os }}_${{ matrix.mode }}_arm64 -j$(nproc)
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}_${{ matrix.mode }}_arm64
+          path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v4
-      with:
-        pattern: "*"
-        path: out_all
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          path: out_all
 
-    - name: Zip outputs
-      run: |
-        cd out_all
-        for d in */ ; do
-          zip -r "${d%/}.zip" "$d"
-        done
+      - name: Zip outputs
+        run: |
+          cd out_all || exit 0
+          for d in */ ; do
+            zip -r "${d%/}.zip" "$d"
+          done
 
-    - name: Publish Release
-      uses: ncipollo/release-action@v1
-      with:
-        artifacts: "out_all/*.zip"
-        tag: Flutter-ARM64-3.27.4
-        token: ${{ secrets.GITHUB_TOKEN }}
-        allowUpdates: true
+      - name: Publish Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "out_all/*.zip"
+          tag: Flutter-ARM64-3.27.4
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
