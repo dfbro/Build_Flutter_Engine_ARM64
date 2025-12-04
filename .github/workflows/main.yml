@@ -59,7 +59,7 @@ jobs:
         cd flutter-engine
         gclient sync
         cd src/flutter
-        git checkout 3.19.4
+        git checkout 3.27.4
         cd ../../
         cd src/third_party
         mkdir dart
@@ -86,11 +86,11 @@ jobs:
       run: echo $TAG_NAME - $RELEASE_TIME
       env:
           TAG_NAME: Flutter-ARM64
-          RELEASE_TIME: 3.19.4
+          RELEASE_TIME: 3.27.4
     - name: Release Engine
       uses: ncipollo/release-action@v1
       with:
         artifacts: "flutter-engine/src/out/*.zip"
-        tag: Flutter-ARM64-3.19.4
+        tag: Flutter-ARM64-3.27.4
         token: ${{ secrets.GH_TOKEN }}
         allowUpdates: true
