@@ -1,6 +1,5 @@
 name: Main
 on:
-  # Triggers the workflow on push or pull request events but only for the main branch
   push:
     branches: [ main ]
   pull_request:
@@ -9,88 +8,104 @@ on:
     - cron: 00 16 * * *
   watch:
     types: [started]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
   build-flutter-engine:
     runs-on: ubuntu-latest
+
     steps:
     - name: Maximize build space
       uses: easimon/maximize-build-space@v4
       with:
-          root-reserve-mb: 2048
-          swap-size-mb: 4096
-          remove-dotnet: 'true'
-          remove-haskell: 'true'
-          remove-android: 'true'
+        root-reserve-mb: 2048
+        swap-size-mb: 4096
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        remove-android: 'true'
+
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
+
     - name: Echo Free space
-      run: |
-          echo "Free space:"
-          df -h
+      run: df -h
+
     - name: Set up Python 3.x
       uses: actions/setup-python@v3
       with:
         python-version: '3.x'
+
     - name: Prepare Env
       run: |
         sudo apt-get update
-        sudo apt-get install g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
-        sudo apt-get install g++-multilib gcc-multilib
-        sudo apt-get install zip
-    - name: Get Resource
+        sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+        sudo apt-get install -y g++-multilib gcc-multilib
+        sudo apt-get install -y zip ninja-build clang cmake
+
+    - name: Get depot_tools (via GitHub mirror)
       run: |
-        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        git clone https://github.com/chromium/depot_tools.git
         export PATH="$PATH:$PWD/depot_tools"
+
+    - name: Get Flutter Engine source
+      run: |
+        export PATH="$PATH:$PWD/depot_tools"
+
         mkdir flutter-engine
-        echo 'solutions = [
-        {
-         "managed": False,
-         "name": "src/flutter",
-         "url": "https://github.com/flutter/engine",
-         "custom_deps": {},
-         "deps_file": "DEPS",
-         "safesync_url": "",
-        },
-        ]' >> flutter-engine/.gclient
+        cat > flutter-engine/.gclient << 'EOF'
+solutions = [
+  {
+    "managed": False,
+    "name": "src/flutter",
+    "url": "https://github.com/flutter/engine",
+    "custom_deps": {},
+    "deps_file": "DEPS",
+    "safesync_url": "",
+  },
+]
+EOF
+
         cd flutter-engine
+
+        # Sync dependencies (includes Dart automatically)
         gclient sync
+
+        # Checkout desired engine version
         cd src/flutter
         git checkout 3.27.4
-        cd ../../
-        cd src/third_party
-        mkdir dart
-        cd dart
-        git clone https://github.com/dart-lang/sdk.git
-        cd ../../../
-    - name: Build Engine
+
+    - name: Build Engine (Linux ARM64 Release)
       run: |
         export PATH="$PATH:$PWD/depot_tools"
-        cd flutter-engine/src
-        ls flutter/
-        ls flutter/tools
-        ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-goma --runtime-mode release
+        cd flutter-engine/src/flutter
+
+        ./tools/gn \
+          --target-os linux \
+          --linux-cpu arm64 \
+          --no-goma \
+          --runtime-mode release
+
         ninja -C out/linux_release_arm64
+
     - name: Zip Engine
       run: |
-        cd flutter-engine/src/out
-        ls
+        cd flutter-engine/src/flutter/out
         zip -q -r linux_release_arm64.zip linux_release_arm64
+
     - name: Get current date
       id: date
       run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
     - name: Test with environment variables
       run: echo $TAG_NAME - $RELEASE_TIME
       env:
-          TAG_NAME: Flutter-ARM64
-          RELEASE_TIME: 3.27.4
+        TAG_NAME: Flutter-ARM64
+        RELEASE_TIME: 3.27.4
+
     - name: Release Engine
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "flutter-engine/src/out/*.zip"
+        artifacts: "flutter-engine/src/flutter/out/*.zip"
         tag: Flutter-ARM64-3.27.4
         token: ${{ secrets.GH_TOKEN }}
         allowUpdates: true
