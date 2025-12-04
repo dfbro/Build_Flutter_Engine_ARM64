@@ -1,177 +1,153 @@
 name: Main
+
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  watch:
-    types: [started]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    outputs:
+      src-path: flutter-engine
     steps:
+    - uses: actions/checkout@v4
+
     - name: Maximize build space
       uses: easimon/maximize-build-space@v4
       with:
         root-reserve-mb: 2048
         swap-size-mb: 4096
-        remove-dotnet: 'true'
-        remove-haskell: 'true'
-        remove-android: 'true'
+        remove-dotnet: true
+        remove-haskell: true
+        remove-android: true
 
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Prepare Env
+    - name: Install build deps
       run: |
         sudo apt-get update
-        sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
-        sudo apt-get install -y g++-multilib gcc-multilib
-        sudo apt-get install -y zip
+        sudo apt-get install -y \
+          g++-aarch64-linux-gnu \
+          g++-arm-linux-gnueabihf \
+          g++-multilib gcc-multilib zip
 
-    - name: Echo Free space
-      run: df -h
-
-    - name: Set up Python
-      uses: actions/setup-python@v3
+    - name: Cache depot_tools
+      uses: actions/cache@v4
       with:
-        python-version: '3.x'
+        path: depot_tools
+        key: depot_tools-cache
 
-    - name: Get depot_tools
+    - name: Get depot_tools if missing
       run: |
-        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        if [ ! -d depot_tools ]; then
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        fi
         echo "$PWD/depot_tools" >> $GITHUB_PATH
 
-    - name: Sync source
-      run: |
-        mkdir flutter-engine
-        echo 'solutions = [{
-            "managed": False,
-            "name": "src/flutter",
-            "url": "https://github.com/flutter/engine",
-            "custom_deps": {},
-            "deps_file": "DEPS",
-            "safesync_url": "",
-        }]' > flutter-engine/.gclient
-
-        cd flutter-engine
-        gclient sync --jobs 4
-        cd src/flutter
-        git fetch --all --tags
-        git checkout 3.27.4
-        cd ../../
-        gclient sync --jobs 4
-
-    - name: Upload source
-      uses: actions/upload-artifact@v4
+    - name: Cache flutter-engine source
+      uses: actions/cache@v4
       with:
-        name: src
         path: flutter-engine
+        key: flutter-engine-${{ github.sha }}
 
-  build-android-release-arm64:
+    - name: Sync Flutter Engine (shallow, fast)
+      run: |
+        if [ ! -d flutter-engine ]; then
+          mkdir flutter-engine
+
+          echo "solutions = [{"                                     > flutter-engine/.gclient
+          echo '  "managed": False,'                              >> flutter-engine/.gclient
+          echo '  "name": "src/flutter",'                         >> flutter-engine/.gclient
+          echo '  "url": "https://github.com/flutter/engine",'    >> flutter-engine/.gclient
+          echo '  "custom_deps": {},'                             >> flutter-engine/.gclient
+          echo '  "deps_file": "DEPS",'                           >> flutter-engine/.gclient
+          echo '  "safesync_url": "",'                            >> flutter-engine/.gclient
+          echo "}]"                                               >> flutter-engine/.gclient
+
+          cd flutter-engine
+          export DEPOT_TOOLS_UPDATE=0
+
+          gclient sync --jobs 16 \
+            --shallow \
+            --no-history \
+            --nohooks \
+            --noprehooks \
+            --noprebuilts
+
+          cd src/flutter
+          git fetch --tags
+          git checkout 3.27.4
+
+          cd ../../
+          gclient runhooks
+        fi
+
+  build:
     needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: src
+    runs-on: ubuntu-22.04
 
-    - name: Build Android ARM64 Release
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg:
+          - { os: android, mode: release }
+          - { os: android, mode: debug }
+          - { os: linux,   mode: release }
+          - { os: linux,   mode: debug }
+
+    steps:
+    - name: Restore flutter-engine
+      uses: actions/cache/restore@v4
+      with:
+        path: flutter-engine
+        key: flutter-engine-${{ github.sha }}
+
+    - name: Cache build output
+      id: cache-build
+      uses: actions/cache@v4
+      with:
+        path: flutter-engine/src/out/${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64
+        key: engine-build-${{ matrix.cfg.os }}-${{ matrix.cfg.mode }}-arm64-${{ github.sha }}
+
+    - name: Build ${{ matrix.cfg.os }} ${{ matrix.cfg.mode }} ARM64
+      if: steps.cache-build.outputs.cache-hit != 'true'
       run: |
         cd flutter-engine/src
         ./flutter/tools/gn \
-          --target-os android --linux-cpu arm64 --no-goma --runtime-mode release
-        ninja -C out/android_release_arm64
+          --target-os ${{ matrix.cfg.os }} \
+          --linux-cpu arm64 \
+          --no-goma \
+          --runtime-mode ${{ matrix.cfg.mode }}
+
+        ninja -C out/${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64 -j$(nproc)
 
     - uses: actions/upload-artifact@v4
       with:
-        name: android_release_arm64
-        path: flutter-engine/src/out/android_release_arm64
-
-  build-android-debug-arm64:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: src
-
-    - name: Build Android ARM64 Debug
-      run: |
-        cd flutter-engine/src
-        ./flutter/tools/gn \
-          --target-os android --linux-cpu arm64 --no-goma --runtime-mode debug
-        ninja -C out/android_debug_arm64
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: android_debug_arm64
-        path: flutter-engine/src/out/android_debug_arm64
-
-  build-linux-release-arm64:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: src
-
-    - name: Build Linux ARM64 Release
-      run: |
-        cd flutter-engine/src
-        ./flutter/tools/gn \
-          --target-os linux --linux-cpu arm64 --no-goma --runtime-mode release
-        ninja -C out/linux_release_arm64
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: linux_release_arm64
-        path: flutter-engine/src/out/linux_release_arm64
-
-  build-linux-debug-arm64:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: src
-
-    - name: Build Linux ARM64 Debug
-      run: |
-        cd flutter-engine/src
-        ./flutter/tools/gn \
-          --target-os linux --linux-cpu arm64 --no-goma --runtime-mode debug
-        ninja -C out/linux_debug_arm64
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: linux_debug_arm64
-        path: flutter-engine/src/out/linux_debug_arm64
+        name: ${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64
+        path: flutter-engine/src/out/${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64
 
   release:
-    needs:
-      - build-android-release-arm64
-      - build-android-debug-arm64
-      - build-linux-release-arm64
-      - build-linux-debug-arm64
-    runs-on: ubuntu-latest
+    needs: build
+    runs-on: ubuntu-22.04
+
     steps:
     - uses: actions/download-artifact@v4
       with:
         pattern: "*"
         path: out_all
 
-    - name: Zip
+    - name: Zip outputs
       run: |
         cd out_all
-        zip -r android_release_arm64.zip android_release_arm64
-        zip -r android_debug_arm64.zip android_debug_arm64
-        zip -r linux_release_arm64.zip linux_release_arm64
-        zip -r linux_debug_arm64.zip linux_debug_arm64
+        for d in */ ; do
+          zip -r "${d%/}.zip" "$d"
+        done
 
-    - name: Release
+    - name: Publish Release
       uses: ncipollo/release-action@v1
       with:
         artifacts: "out_all/*.zip"
