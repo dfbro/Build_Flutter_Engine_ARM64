@@ -4,15 +4,40 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  watch:
+    types: [started]
   workflow_dispatch:
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    outputs:
-      cache-path: ${{ steps.cache.outputs.path }}
     steps:
-    - uses: actions/checkout@v4
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@v4
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 4096
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        remove-android: 'true'
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Prepare Env
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+        sudo apt-get install -y g++-multilib gcc-multilib
+        sudo apt-get install -y zip
+
+    - name: Echo Free space
+      run: df -h
+
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.x'
 
     - name: Get depot_tools
       run: |
@@ -151,5 +176,5 @@ jobs:
       with:
         artifacts: "out_all/*.zip"
         tag: Flutter-ARM64-3.27.4
-        token: ${{ secrets.GH_TOKEN }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         allowUpdates: true
