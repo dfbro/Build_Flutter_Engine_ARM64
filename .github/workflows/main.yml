@@ -30,10 +30,9 @@ jobs:
     - name: Install build deps
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          g++-aarch64-linux-gnu \
-          g++-arm-linux-gnueabihf \
-          g++-multilib gcc-multilib zip
+        sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+        sudo apt-get install -y g++-multilib gcc-multilib
+        sudo apt-get install -y zip
 
     - name: Cache depot_tools
       uses: actions/cache@v4
