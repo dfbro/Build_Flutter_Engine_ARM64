@@ -44,7 +44,7 @@ jobs:
     - name: Get Resource
       run: |
         # Use GitHub mirror (Googlesource blocks GitHub runners randomly)
-        git clone https://github.com/chromium/depot_tools.git
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
         export PATH="$PATH:$PWD/depot_tools"
 
         mkdir flutter-engine
