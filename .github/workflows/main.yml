@@ -4,8 +4,6 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  schedule:
-    - cron: '00 16 * * *'
   watch:
     types: [started]
   workflow_dispatch:
@@ -74,13 +72,22 @@ jobs:
       run: |
         export PATH="$PATH:$PWD/depot_tools"
         cd flutter-engine/src
+        ./flutter/tools/gn --target-os android --linux-cpu arm64 --no-goma --runtime-mode release
+        ninja -C out/android_release_arm64
+        ./flutter/tools/gn --target-os android --linux-cpu arm64 --no-goma --runtime-mode debug
+        ninja -C out/android_debug_arm64
         ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-goma --runtime-mode release
         ninja -C out/linux_release_arm64
-
+        ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-goma --runtime-mode debug
+        ninja -C out/linux_debug_arm64
     - name: Zip Engine
       run: |
         cd flutter-engine/src/out
+        ls
         zip -q -r linux_release_arm64.zip linux_release_arm64
+        zip -q -r linux_debug_arm64.zip linux_debug_arm64
+        zip -q -r android_release_arm64.zip android_release_arm64
+        zip -q -r android_debug_arm64.zip android_debug_arm64
 
     - name: Get current date
       id: date
