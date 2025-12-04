@@ -32,7 +32,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
         sudo apt-get install -y g++-multilib gcc-multilib
-        sudo apt-get install -y zip
+        sudo apt-get install -y zip git python3 ninja-build cmake
 
     - name: Cache depot_tools
       uses: actions/cache@v4
@@ -57,24 +57,21 @@ jobs:
       run: |
         if [ ! -d flutter-engine ]; then
           mkdir flutter-engine
-
-          echo "solutions = [{"                                     > flutter-engine/.gclient
-          echo '  "managed": False,'                              >> flutter-engine/.gclient
-          echo '  "name": "src/flutter",'                         >> flutter-engine/.gclient
-          echo '  "url": "https://github.com/flutter/engine",'    >> flutter-engine/.gclient
-          echo '  "custom_deps": {},'                             >> flutter-engine/.gclient
-          echo '  "deps_file": "DEPS",'                           >> flutter-engine/.gclient
-          echo '  "safesync_url": "",'                            >> flutter-engine/.gclient
-          echo "}]"                                               >> flutter-engine/.gclient
+          echo "solutions = [" > flutter-engine/.gclient
+          echo '  {' >> flutter-engine/.gclient
+          echo '    "managed": False,' >> flutter-engine/.gclient
+          echo '    "name": "src/flutter",' >> flutter-engine/.gclient
+          echo '    "url": "https://github.com/flutter/engine",' >> flutter-engine/.gclient
+          echo '    "custom_deps": {},' >> flutter-engine/.gclient
+          echo '    "deps_file": "DEPS",' >> flutter-engine/.gclient
+          echo '    "safesync_url": "",' >> flutter-engine/.gclient
+          echo '  }' >> flutter-engine/.gclient
+          echo "]" >> flutter-engine/.gclient
 
           cd flutter-engine
           export DEPOT_TOOLS_UPDATE=0
 
-          gclient sync --jobs 16 \
-            --shallow \
-            --no-history \
-            --nohooks \
-            --noprehooks 
+          gclient sync --jobs 16 --shallow --no-history --nohooks --noprehooks 
 
           cd src/flutter
           git fetch --tags
@@ -86,52 +83,48 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        cfg:
-          - { os: android, mode: release }
-          - { os: android, mode: debug }
-          - { os: linux,   mode: release }
-          - { os: linux,   mode: debug }
+        os: [android, linux]
+        mode: [release, debug]
 
     steps:
     - name: Restore flutter-engine
-      uses: actions/cache/restore@v4
+      uses: actions/cache@v4
       with:
         path: flutter-engine
         key: flutter-engine-${{ github.sha }}
 
-    - name: Cache build output
+    - name: Restore build output cache
       id: cache-build
       uses: actions/cache@v4
       with:
-        path: flutter-engine/src/out/${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64
-        key: engine-build-${{ matrix.cfg.os }}-${{ matrix.cfg.mode }}-arm64-${{ github.sha }}
+        path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
+        key: engine-build-${{ matrix.os }}-${{ matrix.mode }}-arm64-${{ github.sha }}
 
-    - name: Build ${{ matrix.cfg.os }} ${{ matrix.cfg.mode }} ARM64
+    - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
       if: steps.cache-build.outputs.cache-hit != 'true'
       run: |
         cd flutter-engine/src
         ./flutter/tools/gn \
-          --target-os ${{ matrix.cfg.os }} \
+          --target-os ${{ matrix.os }} \
           --linux-cpu arm64 \
           --no-goma \
-          --runtime-mode ${{ matrix.cfg.mode }}
+          --runtime-mode ${{ matrix.mode }}
 
-        ninja -C out/${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64 -j$(nproc)
+        ninja -C out/${{ matrix.os }}_${{ matrix.mode }}_arm64 -j$(nproc)
 
-    - uses: actions/upload-artifact@v4
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64
-        path: flutter-engine/src/out/${{ matrix.cfg.os }}_${{ matrix.cfg.mode }}_arm64
+        name: ${{ matrix.os }}_${{ matrix.mode }}_arm64
+        path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
 
   release:
     needs: build
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4
       with:
