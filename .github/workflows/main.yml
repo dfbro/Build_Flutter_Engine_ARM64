@@ -32,10 +32,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            g++-aarch64-linux-gnu \
-            g++-arm-linux-gnueabihf \
-            g++-multilib gcc-multilib \
             zip git python3 python3-pip ninja-build cmake
+          sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+          sudo apt-get install -y g++-multilib gcc-multilib
 
       - name: Cache depot_tools
         uses: actions/cache@v4
