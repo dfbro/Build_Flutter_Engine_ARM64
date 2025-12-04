@@ -32,15 +32,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            zip git python3 python3-pip ninja-build cmake
-          sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
-          sudo apt-get install -y g++-multilib gcc-multilib
-
-      - name: Cache depot_tools
-        uses: actions/cache@v4
-        with:
-          path: depot_tools
-          key: depot_tools-cache
+            zip git python3 python3-pip ninja-build cmake \
+            g++-aarch64-linux-gnu g++-arm-linux-gnueabihf \
+            g++-multilib gcc-multilib
 
       - name: Ensure depot_tools on PATH
         run: |
@@ -48,46 +42,43 @@ jobs:
             git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           fi
           echo "$PWD/depot_tools" >> $GITHUB_PATH
-          export PATH="$PATH:$PWD/depot_tools"
+          export PATH="$PWD/depot_tools:$PATH"
 
-      - name: Create .gclient and full sync (fetch all deps & hooks)
+      - name: Prepare Flutter Engine
         run: |
-          if [ ! -d flutter-engine ]; then
-            mkdir flutter-engine
-            echo "solutions = [" > flutter-engine/.gclient
-            echo '  {' >> flutter-engine/.gclient
-            echo '    "managed": False,' >> flutter-engine/.gclient
-            echo '    "name": "src/flutter",' >> flutter-engine/.gclient
-            echo '    "url": "https://github.com/flutter/engine",' >> flutter-engine/.gclient
-            echo '    "custom_deps": {},' >> flutter-engine/.gclient
-            echo '    "deps_file": "DEPS",' >> flutter-engine/.gclient
-            echo '    "safesync_url": "",' >> flutter-engine/.gclient
-            echo '  }' >> flutter-engine/.gclient
-            echo "]" >> flutter-engine/.gclient
+          # Remove old source to avoid _bad_scm conflicts
+          rm -rf flutter-engine
+          mkdir flutter-engine
 
-            cd flutter-engine
-            export DEPOT_TOOLS_UPDATE=0
+          echo "solutions = [" > flutter-engine/.gclient
+          echo "  {" >> flutter-engine/.gclient
+          echo "    \"managed\": False," >> flutter-engine/.gclient
+          echo "    \"name\": \"src/flutter\"," >> flutter-engine/.gclient
+          echo "    \"url\": \"https://github.com/flutter/engine\"," >> flutter-engine/.gclient
+          echo "    \"custom_deps\": {}," >> flutter-engine/.gclient
+          echo "    \"deps_file\": \"DEPS\"," >> flutter-engine/.gclient
+          echo "    \"safesync_url\": \"\"," >> flutter-engine/.gclient
+          echo "  }" >> flutter-engine/.gclient
+          echo "]" >> flutter-engine/.gclient
 
-            # FULL sync (no --shallow, so third_party packages are fetched)
-            gclient sync --jobs 16
+          cd flutter-engine
+          export DEPOT_TOOLS_UPDATE=0
 
-            cd src/flutter
-            git fetch --tags
-            git checkout 3.27.4 || true
+          # FULL sync to ensure third_party deps exist
+          gclient sync --jobs 16
 
-            cd ../..
-            # Ensure runhooks executed
-            cd flutter-engine
-            gclient runhooks
-            cd ..
-          fi
+          cd src/flutter
+          git fetch --tags
+          git checkout 3.27.4 || true
 
-      - name: Fetch Dart/pub deps (online)
-        run: |
-          # Ensure dart sdk path is present in tree; this script will run pub get (not offline)
-          cd flutter-engine/src/flutter
-          python3 src/flutter/third_party/dart/tools/sdks/dart-sdk/bin/dart pub get --suppress-analytics || true
           cd ../..
+          gclient runhooks
+
+      - name: Fetch Dart/pub deps
+        run: |
+          cd flutter-engine/src/flutter
+          export PATH="$PWD/third_party/dart/tools/sdks/dart-sdk/bin:$PATH"
+          dart pub get --suppress-analytics
 
       - name: Upload source artifact
         uses: actions/upload-artifact@v4
@@ -105,19 +96,13 @@ jobs:
         mode: [release, debug]
 
     steps:
-      - name: Restore depot_tools cache (if any)
-        uses: actions/cache@v4
-        with:
-          path: depot_tools
-          key: depot_tools-cache
-
       - name: Ensure depot_tools on PATH
         run: |
           if [ ! -d depot_tools ]; then
             git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           fi
           echo "$PWD/depot_tools" >> $GITHUB_PATH
-          export PATH="$PATH:$PWD/depot_tools"
+          export PATH="$PWD/depot_tools:$PATH"
 
       - name: Download synced source
         uses: actions/download-artifact@v4
@@ -125,18 +110,9 @@ jobs:
           name: src
           path: .
 
-      - name: Restore build output cache
-        id: cache-build
-        uses: actions/cache@v4
-        with:
-          path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
-          key: engine-build-${{ matrix.os }}-${{ matrix.mode }}-arm64-${{ github.ref }}
-
       - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
-        if: steps.cache-build.outputs.cache-hit != 'true'
         run: |
           cd flutter-engine/src
-          echo "Running GN for ${{ matrix.os }} ${{ matrix.mode }}"
           ./flutter/tools/gn \
             --target-os ${{ matrix.os }} \
             --linux-cpu arm64 \
