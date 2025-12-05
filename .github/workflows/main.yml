@@ -116,7 +116,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: src
-          path: .
+          path: flutter-engine
 
       - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
         run: |
