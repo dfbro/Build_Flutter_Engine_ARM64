@@ -117,6 +117,12 @@ jobs:
         with:
           name: src
           path: flutter-engine
+          
+      - name: Restore executable permissions
+        run: |
+          chmod +x flutter-engine/src/flutter/tools/gn
+          chmod +x -R flutter-engine/src/buildtools || true
+          chmod +x -R flutter-engine/src/third_party || true
 
       - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
         run: |
