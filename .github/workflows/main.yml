@@ -1,14 +1,13 @@
 name: Main
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
-
-permissions:
-  contents: write
+    inputs:
+      ref:
+        description: Dart SDK git ref
+        required: true
+        type: string
+        default: main
 
 jobs:
   prepare:
@@ -16,7 +15,7 @@ jobs:
     outputs:
       src-path: flutter-engine
     steps:
-      - name: Checkout
+      - name: Checkout Flutter Engine
         uses: actions/checkout@v4
 
       - name: Maximize build space
@@ -28,13 +27,13 @@ jobs:
           remove-haskell: true
           remove-android: true
 
-      - name: Install build deps
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            zip git python3 python3-pip ninja-build cmake 
-          sudo apt-get install g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
-          sudo apt-get install  g++-multilib gcc-multilib
+            zip git python3 python3-pip ninja-build cmake \
+            g++-aarch64-linux-gnu g++-arm-linux-gnueabihf \
+            g++-multilib gcc-multilib unzip wget curl
 
       - name: Ensure depot_tools on PATH
         run: |
@@ -44,44 +43,37 @@ jobs:
           echo "$PWD/depot_tools" >> $GITHUB_PATH
           export PATH="$PWD/depot_tools:$PATH"
 
-      - name: Prepare Flutter Engine
+      - name: Sync Flutter Engine & Dart
         run: |
-          # Remove old source to avoid _bad_scm conflicts
           rm -rf flutter-engine
           mkdir flutter-engine
-
-          echo "solutions = [" > flutter-engine/.gclient
-          echo "  {" >> flutter-engine/.gclient
-          echo "    \"managed\": False," >> flutter-engine/.gclient
-          echo "    \"name\": \"src/flutter\"," >> flutter-engine/.gclient
-          echo "    \"url\": \"https://github.com/flutter/engine\"," >> flutter-engine/.gclient
-          echo "    \"custom_deps\": {}," >> flutter-engine/.gclient
-          echo "    \"deps_file\": \"DEPS\"," >> flutter-engine/.gclient
-          echo "    \"safesync_url\": \"\"," >> flutter-engine/.gclient
-          echo "  }" >> flutter-engine/.gclient
-          echo "]" >> flutter-engine/.gclient
+          echo "solutions = [{" > flutter-engine/.gclient
+          echo "  \"managed\": False," >> flutter-engine/.gclient
+          echo "  \"name\": \"src/flutter\"," >> flutter-engine/.gclient
+          echo "  \"url\": \"https://github.com/flutter/engine\"," >> flutter-engine/.gclient
+          echo "  \"custom_deps\": {}," >> flutter-engine/.gclient
+          echo "  \"deps_file\": \"DEPS\"," >> flutter-engine/.gclient
+          echo "  \"safesync_url\": \"\"" >> flutter-engine/.gclient
+          echo "}]" >> flutter-engine/.gclient
 
           cd flutter-engine
           export DEPOT_TOOLS_UPDATE=0
-
-          # FULL sync to ensure third_party deps exist
-          gclient sync --jobs 16
+          gclient sync --with_branch_heads --with_tags --reset --jobs 16
 
           cd src/flutter
           git fetch --tags
           git checkout 3.27.4 || true
-
           cd ../..
           gclient runhooks
 
-      - name: Fetch Dart/pub deps
+      - name: Fetch Dart pub dependencies
         run: |
           cd flutter-engine/src/flutter
           export PATH="$PWD/third_party/dart/tools/sdks/dart-sdk/bin:$PATH"
           dart pub get --suppress-analytics
 
       - name: Upload source artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: src
           path: flutter-engine
@@ -92,62 +84,82 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [android, linux]
-        mode: [release, debug]
+        include:
+          # Linux
+          - platform: linux
+            target-arch: x64
+          - platform: linux
+            target-arch: arm64
+          - platform: linux
+            target-arch: arm
+          # Android
+          - platform: android
+            target-arch: arm64
+          - platform: android
+            target-arch: arm
+          - platform: android
+            target-arch: riscv64
 
     steps:
-      - name: Ensure depot_tools on PATH
-        run: |
-          if [ ! -d depot_tools ]; then
-            git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          fi
-          echo "$PWD/depot_tools" >> $GITHUB_PATH
-          export PATH="$PWD/depot_tools:$PATH"
-
       - name: Download synced source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: src
           path: .
 
-      - name: Build ${{ matrix.os }} ${{ matrix.mode }} ARM64
+      - name: Install build dependencies
         run: |
-          cd flutter-engine/src
-          ./flutter/tools/gn \
-            --target-os ${{ matrix.os }} \
-            --linux-cpu arm64 \
-            --no-goma \
-            --runtime-mode ${{ matrix.mode }}
+          sudo apt-get update
+          sudo apt-get install -y \
+            zip git python3 python3-pip ninja-build cmake \
+            g++-aarch64-linux-gnu g++-arm-linux-gnueabihf \
+            g++-multilib gcc-multilib unzip wget curl
 
-          ninja -C out/${{ matrix.os }}_${{ matrix.mode }}_arm64 -j$(nproc)
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.os }}_${{ matrix.mode }}_arm64
-          path: flutter-engine/src/out/${{ matrix.os }}_${{ matrix.mode }}_arm64
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: "*"
-          path: out_all
-
-      - name: Zip outputs
+      - name: Setup multiarch
         run: |
-          cd out_all || exit 0
-          for d in */ ; do
-            zip -r "${d%/}.zip" "$d"
-          done
+          case ${{ matrix.target-arch }} in
+            arm)
+              sudo dpkg --add-architecture armhf
+              sudo apt-get update
+              sudo apt-get install -y libc6:armhf
+              ;;
+            arm64)
+              sudo dpkg --add-architecture arm64
+              sudo apt-get update
+              sudo apt-get install -y libc6:arm64
+              ;;
+          esac
 
-      - name: Publish Release
-        uses: ncipollo/release-action@v1
+      - name: Setup Android NDK
+        if: matrix.platform == 'android'
+        run: |
+          NDK_VERSION=r25b
+          wget https://dl.google.com/android/repository/android-ndk-$NDK_VERSION-linux.zip
+          unzip android-ndk-$NDK_VERSION-linux.zip
+          export ANDROID_NDK_HOME=$PWD/android-ndk-$NDK_VERSION
+          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+      - name: Build Dart/Flutter SDK
+        run: |
+          cd flutter-engine/src/sdk
+
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            # Build host tools for cross compilation
+            if [ "${{ matrix.target-arch }}" != "x64" ]; then
+              ./tools/build.py --mode release --os linux --arch x64 create_sdk
+            fi
+            ./tools/build.py --mode release --os linux --arch ${{ matrix.target-arch }} create_sdk
+          else
+            ./tools/build.py --mode release --os android --arch ${{ matrix.target-arch }} create_sdk
+          fi
+
+      - name: Archive output
+        run: |
+          OUT_NAME="dartsdk-${{ matrix.platform }}-${{ matrix.target-arch }}-3.27.4.tar.gz"
+          tar -czf "$OUT_NAME" -C flutter-engine/src/sdk/out/Release* -- dart-sdk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
         with:
-          artifacts: "out_all/*.zip"
-          tag: Flutter-ARM64-3.27.4
-          token: ${{ secrets.GITHUB_TOKEN }}
-          allowUpdates: true
+          name: dartsdk-${{ matrix.platform }}-${{ matrix.target-arch }}-3.27.4
+          path: dartsdk-${{ matrix.platform }}-${{ matrix.target-arch }}-3.27.4.tar.gz
