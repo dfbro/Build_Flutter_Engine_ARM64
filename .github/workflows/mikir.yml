@@ -1,0 +1,108 @@
+name: Main
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  watch:
+    types: [started]
+  workflow_dispatch:
+
+jobs:
+  build-flutter-engine:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@v4
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 4096
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        remove-android: 'true'
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Echo Free space
+      run: df -h
+
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.x'
+
+    - name: Prepare Env
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+        sudo apt-get install -y g++-multilib gcc-multilib
+        sudo apt-get install -y zip
+
+    - name: Get Resource
+      run: |
+        # Use GitHub mirror (Googlesource blocks GitHub runners randomly)
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        export PATH="$PATH:$PWD/depot_tools"
+
+        mkdir flutter-engine
+        echo 'solutions = ['             > flutter-engine/.gclient
+        echo '{'                        >> flutter-engine/.gclient
+        echo ' "managed": False,'       >> flutter-engine/.gclient
+        echo ' "name": "src/flutter",'  >> flutter-engine/.gclient
+        echo ' "url": "https://github.com/flutter/engine",' >> flutter-engine/.gclient
+        echo ' "custom_deps": {},'      >> flutter-engine/.gclient
+        echo ' "deps_file": "DEPS",'    >> flutter-engine/.gclient
+        echo ' "safesync_url": "",'     >> flutter-engine/.gclient
+        echo '},'                        >> flutter-engine/.gclient
+        echo ']'                         >> flutter-engine/.gclient
+
+        cd flutter-engine
+        gclient sync --jobs 4
+
+        cd src/flutter
+        git fetch --all --tags
+        git checkout 3.27.4
+        cd ../../
+
+        # Re-sync deps for the specific engine version
+        gclient sync --jobs 4
+
+    - name: Build Engine
+      run: |
+        export PATH="$PATH:$PWD/depot_tools"
+        cd flutter-engine/src
+        ./flutter/tools/gn --target-os android --linux-cpu arm64 --no-goma --runtime-mode release
+        ninja -C out/android_release_arm64
+        ./flutter/tools/gn --target-os android --linux-cpu arm64 --no-goma --runtime-mode debug
+        ninja -C out/android_debug_arm64
+        ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-goma --runtime-mode release
+        ninja -C out/linux_release_arm64
+        ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-goma --runtime-mode debug
+        ninja -C out/linux_debug_arm64
+    - name: Zip Engine
+      run: |
+        cd flutter-engine/src/out
+        ls
+        zip -q -r linux_release_arm64.zip linux_release_arm64
+        zip -q -r linux_debug_arm64.zip linux_debug_arm64
+        zip -q -r android_release_arm64.zip android_release_arm64
+        zip -q -r android_debug_arm64.zip android_debug_arm64
+
+    - name: Get current date
+      id: date
+      run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
+    - name: Test with environment variables
+      run: echo "$TAG_NAME - $RELEASE_TIME"
+      env:
+        TAG_NAME: Flutter-ARM64
+        RELEASE_TIME: 3.27.4
+
+    - name: Release Engine
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "flutter-engine/src/out/*.zip"
+        tag: Flutter-ARM64-3.27.4
+        token: ${{ secrets.GITHUB_TOKEN }}
+        allowUpdates: true
